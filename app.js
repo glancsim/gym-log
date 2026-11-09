@@ -87,6 +87,8 @@ async function nacti() {
       const k = klic(z.cvik_id, z.serie_c);
       if (!st.zaznamy[k]) st.zaznamy[k] = z;
     });
+    const casy = Object.keys(st.zaznamy).map(k => st.zaznamy[k].cas_zapisu).filter(Boolean).sort();
+    if (!st.start && casy.length) st.start = casy[0];
     LS.set('dnesni', st);
   }
 }
@@ -195,6 +197,38 @@ function zapsano(c) {
   return Object.keys(st.zaznamy).filter(k => st.zaznamy[k].cvik_id === c.cvik_id).length;
 }
 
+// ---------- čas a ukončení tréninku ----------
+function minuty() {
+  const st = dnesniStav();
+  if (!st.start) return null;
+  const od = new Date(st.start.replace(' ', 'T'));
+  const po = st.konec ? new Date(st.konec.replace(' ', 'T')) : new Date();
+  return Math.max(0, Math.round((po - od) / 60000));
+}
+
+function kresliCas() {
+  const el = document.querySelector('.cas');
+  if (!el) return;
+  const m = minuty();
+  el.textContent = m == null ? '' : ' · ' + m + ' min' + (dnesniStav().konec ? ' (ukončeno)' : '');
+}
+
+function konecHTML() {
+  const st = dnesniStav();
+  const n = Object.keys(st.zaznamy).length;
+  if (!n) return '';
+  if (!st.konec) return '<button class="velke hlavni" data-akce="ukoncit">Ukončit trénink</button>';
+  return '<div class="souhrn"><b>Trénink ukončen.</b><br>Doba: ' + minuty() + ' min · zapsané série: ' + n + '<br>' +
+    (fronta.length ? 'Na odeslání čeká ' + fronta.length + '. Otevři appku, až bude signál.' : 'Vše je uložené v tabulce.') +
+    '</div><button class="velke" data-akce="pokracovat">Pokračovat v tréninku</button>';
+}
+
+function kresliKonec() {
+  const el = document.getElementById('konec');
+  if (el) el.innerHTML = konecHTML();
+  kresliCas();
+}
+
 // ---------- vykreslení ----------
 function kresli() {
   pouzijBarvu();
@@ -248,6 +282,7 @@ function kresliSync() {
   b.className = 'sync ' + (fronta.length ? 'ceka' : 'vse');
   b.textContent = fronta.length ? '↑ ' + fronta.length : '✓';
   b.setAttribute('aria-label', fronta.length ? 'Čeká na odeslání: ' + fronta.length : 'Vše odesláno');
+  kresliKonec();
 }
 
 function kresliTrenink() {
@@ -258,7 +293,7 @@ function kresliTrenink() {
     .sort((a, b) => a.poradi - b.poradi);
   const d = new Date();
   let html = '<header><div class="lista"><h1>' + esc(vybrany || 'Žádný trénink') +
-    '<small>' + esc(cfg.osoba) + ' · ' + d.getDate() + '. ' + (d.getMonth() + 1) + '.</small></h1>' +
+    '<small>' + esc(cfg.osoba) + ' · ' + d.getDate() + '. ' + (d.getMonth() + 1) + '.<span class="cas"></span></small></h1>' +
     '<button class="sync" data-akce="odeslat"></button>' +
     '<button data-akce="nastaveni" aria-label="Nastavení">⚙</button></div>';
   if (t.length > 1) {
@@ -267,7 +302,7 @@ function kresliTrenink() {
   }
   html += '</header>' + hlaskaHTML();
   if (!aktualniPlan.length) html += '<div class="hlaska">Pro tuto osobu není v listu Plan žádný aktivní cvik.</div>';
-  html += aktualniPlan.map((p, i) => kartaHTML(p, i)).join('');
+  html += aktualniPlan.map((p, i) => kartaHTML(p, i)).join('') + '<div class="formular" id="konec"></div>';
   app.innerHTML = html;
   kresliSync();
 }
@@ -307,7 +342,8 @@ function kartaHTML(p, i) {
     (c.alternativa ? '<br>Náhrada: ' + esc(c.alternativa) : '') + '</details><div class="serie">';
   const n = pocetRadku(c, p);
   for (let s = 1; s <= n; s++) h += radekHTML(c, p, s);
-  h += '</div><button class="pridat" data-akce="pridat">+ série</button></article>';
+  h += '</div><button class="pridat" data-akce="pridat">+ série</button>' +
+    '<button class="pridat" data-akce="odebrat">− série</button></article>';
   return h;
 }
 
@@ -326,7 +362,10 @@ function radekHTML(c, p, n) {
     (c.typ === 'cas' ? 'Čas v sekundách' : 'Opakování') + '" value="' + esc(fmt(pre.opak)) + '">' +
     '<button data-akce="krok" data-pole="opak" data-smer="1" aria-label="Přidat">+</button>' +
     '<button class="zapsat" data-akce="zapsat" aria-label="Zapsat sérii ' + n + '">✓</button>';
-  if (z) h += '<button class="pozn" data-akce="pozn">✎ ' + esc(z.poznamka || 'poznámka') + '</button>';
+  if (z) {
+    h += '<div class="podradek"><button data-akce="pozn">✎ ' + esc(z.poznamka || 'poznámka') + '</button>' +
+      '<button data-akce="smazat" aria-label="Smazat sérii ' + n + '">✕ smazat</button></div>';
+  }
   return h + '</div>';
 }
 
@@ -377,6 +416,8 @@ function zapis(el) {
 function ulozZaznam(z) {
   const st = dnesniStav();
   st.zaznamy[klic(z.cvik_id, z.serie_c)] = z;
+  if (!st.start) st.start = z.cas_zapisu;
+  delete st.konec;
   LS.set('dnesni', st);
   doFronty(z);
   kresliSync();
@@ -391,6 +432,52 @@ function poznamka(el) {
   if (t === null) return;
   ulozZaznam(Object.assign({}, z, { poznamka: t.trim(), cas_zapisu: ted() }));
   k.radek.outerHTML = radekHTML(k.c, k.p, k.n);
+}
+
+function smazat(el) {
+  const k = kontext(el);
+  const st = dnesniStav();
+  const z = st.zaznamy[klic(k.c.cvik_id, k.n)];
+  if (!z || !confirm('Smazat ' + k.n + '. sérii?')) return;
+  delete st.zaznamy[klic(k.c.cvik_id, k.n)];
+  LS.set('dnesni', st);
+  doFronty({ zaznam_id: z.zaznam_id, cas_zapisu: ted(), smazat: true });
+  const posledni = k.n === k.karta.querySelectorAll('.radek').length;
+  if (posledni && k.n > Number(k.p.serie)) k.radek.remove();
+  else k.radek.outerHTML = radekHTML(k.c, k.p, k.n);
+  k.karta.classList.toggle('hotovo', zapsano(k.c) >= Number(k.p.serie));
+  kresliSync();
+  odesli();
+}
+
+function odebratSerii(el) {
+  const k = kontext(el);
+  const radky = k.karta.querySelectorAll('.radek');
+  if (radky.length <= 1) return;
+  if (dnesniStav().zaznamy[klic(k.c.cvik_id, radky.length)]) {
+    alert('Poslední série je zapsaná. Nejdřív ji smaž tlačítkem „✕ smazat“ pod ní.');
+    return;
+  }
+  radky[radky.length - 1].remove();
+}
+
+function ukoncit(konec) {
+  const st = dnesniStav();
+  if (konec) st.konec = ted(); else delete st.konec;
+  LS.set('dnesni', st);
+  kresliKonec();
+  if (konec) odesli();
+}
+
+/** Fotka přes celou obrazovku: výchozí i koncová poloha pod sebou, klepnutím se zavře. */
+function zvetsit(el) {
+  const prvni = el.getAttribute('src');
+  const druha = prvni.replace(/\/0\.jpg$/, '/1.jpg');
+  const nazev = el.closest('.karta').querySelector('h2').textContent;
+  let h = '<div class="lupa" data-akce="zavrit"><b>' + esc(nazev) + '</b>' +
+    '<img class="foto-velka" crossorigin="anonymous" alt="Výchozí poloha" src="' + esc(prvni) + '">';
+  if (druha !== prvni) h += '<img class="foto-velka" crossorigin="anonymous" alt="Koncová poloha" src="' + esc(druha) + '">';
+  app.insertAdjacentHTML('beforeend', h + '<small>Klepnutím zavřeš</small></div>');
 }
 
 function pridatSerii(el) {
@@ -433,7 +520,12 @@ app.addEventListener('click', function (e) {
   else if (a === 'zapsat') zapis(el);
   else if (a === 'pozn') poznamka(el);
   else if (a === 'pridat') pridatSerii(el);
-  else if (a === 'foto') el.src = el.src.replace(/\/([01])\.jpg$/, (m, d) => '/' + (d === '0' ? '1' : '0') + '.jpg');
+  else if (a === 'odebrat') odebratSerii(el);
+  else if (a === 'smazat') smazat(el);
+  else if (a === 'ukoncit') ukoncit(true);
+  else if (a === 'pokracovat') ukoncit(false);
+  else if (a === 'foto') zvetsit(el);
+  else if (a === 'zavrit') el.remove();
   else if (a === 'trenink') { LS.set('vyber', { datum: dnes(), osoba: cfg.osoba, trenink: el.dataset.trenink }); window.scrollTo(0, 0); kresli(); }
   else if (a === 'nastaveni') { obrazovka = 'nastaveni'; hlaska = null; kresli(); }
   else if (a === 'zpet') { obrazovka = 'trenink'; hlaska = null; kresli(); }
@@ -467,10 +559,12 @@ app.addEventListener('focusin', function (e) {
 });
 // Obrázek, který se nenačte (např. offline bez mezipaměti), se skryje.
 app.addEventListener('error', function (e) {
-  if (e.target.classList && e.target.classList.contains('foto')) e.target.style.display = 'none';
+  const c = e.target.classList;
+  if (c && (c.contains('foto') || c.contains('foto-velka'))) e.target.style.display = 'none';
 }, true);
 
 window.addEventListener('online', odesli);
+setInterval(kresliCas, 20000);
 document.addEventListener('visibilitychange', function () { if (!document.hidden) odesli(); });
 
 // ---------- ukázková data (bez připojení k tabulce) ----------
@@ -478,7 +572,11 @@ function demoApi(action, req) {
   const base = 'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/';
   const ulozene = LS.get('demo', []);
   if (action === 'zapsat') {
-    req.zaznamy.forEach(z => { const i = ulozene.findIndex(x => x.zaznam_id === z.zaznam_id); if (i >= 0) ulozene[i] = z; else ulozene.push(z); });
+    req.zaznamy.forEach(z => {
+      const i = ulozene.findIndex(x => x.zaznam_id === z.zaznam_id);
+      if (z.smazat) { if (i >= 0) ulozene.splice(i, 1); }
+      else if (i >= 0) ulozene[i] = z; else ulozene.push(z);
+    });
     LS.set('demo', ulozene);
     return Promise.resolve({ ok: true, ulozeno: req.zaznamy.map(z => z.zaznam_id) });
   }

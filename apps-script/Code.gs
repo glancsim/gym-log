@@ -6,7 +6,8 @@
  *
  * Všechny požadavky jdou přes POST s JSON tělem: { token, action, ... }
  *   action "nacist"  { osoba? }    → cviky, plan, nastaveni, zaznamy (poslední 2 dny na cvik)
- *   action "zapsat"  { zaznamy[] } → přidá nebo přepíše řádky podle zaznam_id
+ *   action "zapsat"  { zaznamy[] } → přidá nebo přepíše řádky podle zaznam_id;
+ *                                   záznam { zaznam_id, smazat: true } řádek smaže
  */
 
 const ZAZNAMY_SLOUPCE = ['zaznam_id', 'cas_zapisu', 'datum', 'osoba', 'trenink',
@@ -89,8 +90,15 @@ function zapsat(req) {
     }
     const nove = [];
     const ulozeno = [];
+    const keSmazani = [];
     zaznamy.forEach(function (z) {
       if (!z || !z.zaznam_id) return;
+      if (z.smazat) {
+        const r = radekPodleId[String(z.zaznam_id)];
+        if (r && r <= posledni && keSmazani.indexOf(r) === -1) keSmazani.push(r);
+        ulozeno.push(String(z.zaznam_id));
+        return;
+      }
       const radek = [
         text(z.zaznam_id), text(z.cas_zapisu), text(z.datum), text(z.osoba), text(z.trenink),
         text(z.cvik_id), cislo(z.serie_c), cislo(z.vaha_kg), cislo(z.opakovani), text(z.poznamka)
@@ -107,6 +115,8 @@ function zapsat(req) {
     if (nove.length) {
       list.getRange(posledni + 1, 1, nove.length, ZAZNAMY_SLOUPCE.length).setValues(nove);
     }
+    // Mazání až nakonec a odspodu, aby se neposunula čísla řádků.
+    keSmazani.sort(function (a, b) { return b - a; }).forEach(function (r) { list.deleteRow(r); });
     return { ok: true, ulozeno: ulozeno };
   } finally {
     lock.releaseLock();

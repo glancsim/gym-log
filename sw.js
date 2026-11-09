@@ -1,6 +1,6 @@
 // Service worker: aplikace a už zobrazené obrázky cviků fungují i bez signálu.
 // Při změně souborů aplikace zvyš číslo verze, staré mezipaměti se smažou.
-const VERZE = 'fitko-v1';
+const VERZE = 'fitko-v2';
 const OBRAZKY = 'fitko-obrazky';
 const SHELL = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 

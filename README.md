@@ -58,8 +58,11 @@ do veřejného chatu.
 | Změň opakování zapsané série a znovu ✓ | Řádek v tabulce se přepíše, nevznikne druhý |
 | Zavři a otevři appku | Dnešní série zůstanou vyplněné |
 
-Testovací řádky pak v listu `Zaznamy` smaž. Appka sérii smazat neumí, jen přepsat;
-omylem zapsanou sérii smaž přímo v tabulce.
+Testovací řádky pak v listu `Zaznamy` smaž. Omylem zapsanou sérii smažeš v appce
+tlačítkem „✕ smazat“ pod ní, řádek zmizí i z tabulky.
+
+Délku tréninku appka počítá od první zapsané série do klepnutí na „Ukončit trénink“.
+V tabulce se dá spočítat ze sloupce `cas_zapisu` (první a poslední série dne).
 
 Bez tabulky si appku vyzkoušíš tlačítkem **Vyzkoušet s ukázkovými daty**.
 
@@ -75,4 +78,4 @@ Bez tabulky si appku vyzkoušíš tlačítkem **Vyzkoušet s ukázkovými daty**
 
 Fotky cviků jsou z [free-exercise-db](https://github.com/yuhonas/free-exercise-db)
 (volné dílo, licence Unlicense) a načítají se přímo odtud. Klepnutí na fotku
-přepne mezi výchozí a koncovou polohou.
+ji zvětší přes celou obrazovku a ukáže výchozí i koncovou polohu.
