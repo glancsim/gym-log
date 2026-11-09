@@ -608,7 +608,16 @@ function demoApi(action, req) {
 }
 
 // ---------- start ----------
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
+if ('serviceWorker' in navigator) {
+  // Když se na pozadí nainstaluje nová verze appky, stránka se jednou sama obnoví,
+  // aby neběžel starý kód s novým vzhledem. Při úplně první instalaci se neobnovuje.
+  const melaVerzi = !!navigator.serviceWorker.controller;
+  let obnoveno = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (melaVerzi && !obnoveno) { obnoveno = true; location.reload(); }
+  });
+  navigator.serviceWorker.register('sw.js').catch(function () {});
+}
 kresli();
 if (cfg.url) {
   // Překresli jen při skutečné změně dat, ať se nepřepíše rozepsaná série.
