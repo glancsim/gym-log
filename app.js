@@ -20,6 +20,7 @@ let obrazovka = 'trenink';              // 'trenink' | 'nastaveni'
 let hlaska = null;                      // { text, chyba }
 let odesilam = false;
 let aktualniPlan = [];
+let vymena = null;                      // index karty, pro kterou je otevřený výběr náhrady
 
 // ---------- pomocné ----------
 const app = document.getElementById('app');
@@ -290,7 +291,9 @@ function kresliTrenink() {
   const t = treninky();
   aktualniPlan = data.plan
     .filter(p => p.osoba === cfg.osoba && p.trenink === vybrany && p.aktivni !== 'ne')
-    .sort((a, b) => a.poradi - b.poradi);
+    .sort((a, b) => a.poradi - b.poradi)
+    .map(sNahradou);
+  vymena = null;
   const d = new Date();
   let html = '<header><div class="lista"><h1>' + esc(vybrany || 'Žádný trénink') +
     '<small>' + esc(cfg.osoba) + ' · ' + d.getDate() + '. ' + (d.getMonth() + 1) + '.<span class="cas"></span></small></h1>' +
@@ -308,7 +311,104 @@ function kresliTrenink() {
 }
 
 function cvikPodleId(id) {
-  return data.cviky.find(c => c.cvik_id === id) || { cvik_id: id, nazev: id, typ: 'vaha', popis: '', obrazek_url: '' };
+  return data.cviky.find(c => c.cvik_id === id) || vlastniCviky().find(c => c.cvik_id === id) ||
+    { cvik_id: id, nazev: id, typ: 'vaha', popis: '', obrazek_url: '' };
+}
+
+// ---------- náhrada cviku (stroj je obsazený nebo ve fitku chybí) ----------
+// Náhrada platí jen pro dnešní trénink. Série se zapisují pod náhradní cvik,
+// takže se u něj počítá i vlastní historie a návrh váhy.
+function slot(p) { return p.trenink + '|' + p.poradi + '|' + (p.puvodni || p.cvik_id); }
+function vlastniCviky() { return LS.get('vlastniCviky', []); }
+
+function sNahradou(p) {
+  const id = (dnesniStav().nahrady || {})[slot(p)];
+  return id && id !== p.cvik_id ? Object.assign({}, p, { cvik_id: id, puvodni: p.cvik_id }) : p;
+}
+
+function nahradit(i, id) {
+  const p = aktualniPlan[i];
+  const puvodni = p.puvodni || p.cvik_id;
+  if (id === p.cvik_id) return;
+  if (zapsano(cvikPodleId(p.cvik_id)) &&
+    !confirm('U cviku „' + cvikPodleId(p.cvik_id).nazev + '“ už jsou dnes zapsané série. V tabulce zůstanou, jen se tady skryjí. Vyměnit?')) return;
+  const st = dnesniStav();
+  st.nahrady = st.nahrady || {};
+  if (id === puvodni) delete st.nahrady[slot(p)];
+  else {
+    st.nahrady[slot(p)] = id;
+    const hk = cfg.osoba + '|' + slot(p);
+    const hist = LS.get('nahradyHist', {});
+    hist[hk] = [id].concat((hist[hk] || []).filter(x => x !== id)).slice(0, 3);
+    LS.set('nahradyHist', hist);
+  }
+  LS.set('dnesni', st);
+  aktualniPlan[i] = sNahradou(Object.assign({}, p, { cvik_id: puvodni, puvodni: undefined }));
+  const karta = app.querySelector('.karta[data-i="' + i + '"]');
+  if (karta) karta.outerHTML = kartaHTML(aktualniPlan[i], i);
+  zavritVymenu();
+}
+
+function pridatVlastni(nazev, typ) {
+  nazev = nazev.trim().slice(0, 80);
+  if (!nazev) return;
+  const existujici = data.cviky.concat(vlastniCviky()).find(c => String(c.nazev).toLowerCase() === nazev.toLowerCase());
+  if (existujici) return nahradit(vymena, existujici.cvik_id);
+  const v = vlastniCviky();
+  v.push({ cvik_id: nazev, nazev: nazev, typ: typ, krok_kg: '', popis: 'Vlastní cvik přidaný během tréninku.', obrazek_url: '', alternativa: '' });
+  LS.set('vlastniCviky', v);
+  nahradit(vymena, nazev);
+}
+
+function otevritVymenu(el) {
+  vymena = Number(el.closest('.karta').dataset.i);
+  const p = aktualniPlan[vymena];
+  const c = cvikPodleId(p.puvodni || p.cvik_id);
+  app.insertAdjacentHTML('beforeend', '<div class="vyber" role="dialog" aria-label="Vyměnit cvik"><div class="lista">' +
+    '<h1>Vyměnit cvik<small>místo: ' + esc(c.nazev) + '</small></h1><button data-akce="zavritVyber">Zavřít</button></div>' +
+    (c.alternativa ? '<div class="info">Doporučená náhrada: <b>' + esc(c.alternativa) + '</b></div>' : '') +
+    '<input id="hledat" type="search" placeholder="Hledat cvik…" autocomplete="off" aria-label="Hledat cvik">' +
+    '<div id="seznam"></div></div>');
+  kresliSeznam('');
+}
+
+function zavritVymenu() {
+  vymena = null;
+  const el = app.querySelector('.vyber');
+  if (el) el.remove();
+}
+
+function kresliSeznam(hledat) {
+  const el = document.getElementById('seznam');
+  if (!el || vymena == null) return;
+  const p = aktualniPlan[vymena];
+  const puvodni = cvikPodleId(p.puvodni || p.cvik_id);
+  // Cviky, které už jsou dnes v plánu, nenabízej – série by se jim pomíchaly.
+  const obsazene = aktualniPlan.filter((x, j) => j !== vymena).map(x => x.cvik_id);
+  const vse = data.cviky.concat(vlastniCviky().filter(v => !data.cviky.some(c => c.cvik_id === v.cvik_id)))
+    .filter(c => obsazene.indexOf(c.cvik_id) === -1 && c.cvik_id !== puvodni.cvik_id);
+  const q = hledat.trim().toLowerCase();
+  const alt = String(puvodni.alternativa || '').toLowerCase();
+  const hist = LS.get('nahradyHist', {})[cfg.osoba + '|' + slot(p)] || [];
+  const tlacitko = c => '<button class="velke' + (c.cvik_id === p.cvik_id ? ' hlavni' : '') + '" data-akce="nahradit" data-cvik="' +
+    esc(c.cvik_id) + '">' + esc(c.nazev) + '</button>';
+  let h = '';
+  if (q) {
+    const nalez = vse.filter(c => String(c.nazev).toLowerCase().indexOf(q) !== -1 || String(c.cvik_id).toLowerCase().indexOf(q) !== -1);
+    h += nalez.map(tlacitko).join('') || '<p>Nic nenalezeno.</p>';
+    h += '<label>Přidat jako nový cvik</label>' +
+      '<button class="velke" data-akce="vlastni" data-typ="vaha">+ „' + esc(hledat.trim()) + '“ s váhou</button>' +
+      '<button class="velke" data-akce="vlastni" data-typ="vlastni_vaha">+ „' + esc(hledat.trim()) + '“ bez váhy</button>';
+  } else {
+    if (p.puvodni) h += '<button class="velke" data-akce="nahradit" data-cvik="' + esc(puvodni.cvik_id) + '">↺ Zpět na původní: ' + esc(puvodni.nazev) + '</button>';
+    const navrh = vse.filter(c => hist.indexOf(c.cvik_id) !== -1 ||
+      (alt && (alt.indexOf(String(c.nazev).toLowerCase()) !== -1 || alt.indexOf(String(c.cvik_id).toLowerCase()) !== -1)));
+    navrh.sort((a, b) => (hist.indexOf(a.cvik_id) + 1 || 9) - (hist.indexOf(b.cvik_id) + 1 || 9));
+    if (navrh.length) h += '<label>Navrhované</label>' + navrh.map(tlacitko).join('');
+    h += '<label>Všechny cviky</label>' + vse.filter(c => navrh.indexOf(c) === -1).map(tlacitko).join('') +
+      '<p>Cvik v seznamu chybí? Napiš jeho název do hledání a přidej ho.</p>';
+  }
+  el.innerHTML = h;
 }
 
 function kartaHTML(p, i) {
@@ -320,9 +420,11 @@ function kartaHTML(p, i) {
   if (c.obrazek_url) {
     h += '<img class="foto" crossorigin="anonymous" loading="lazy" alt="" src="' + esc(c.obrazek_url) + '" data-akce="foto">';
   }
-  h += '<div><h2>' + esc(c.nazev) + '</h2><div class="cil">' + esc(p.serie) + ' × ' + esc(p.opak_min) +
+  h += '<div class="nazev"><h2>' + esc(c.nazev) + '</h2>' +
+    (p.puvodni ? '<div class="misto">⇄ místo: ' + esc(cvikPodleId(p.puvodni).nazev) + '</div>' : '') + '<div class="cil">' + esc(p.serie) + ' × ' + esc(p.opak_min) +
     (String(p.opak_max) !== String(p.opak_min) ? '–' + esc(p.opak_max) : '') + jednotka +
-    (p.poznamka && p.lekar !== 'ano' ? ' · ' + esc(p.poznamka) : '') + '</div></div></div>';
+    (p.poznamka && p.lekar !== 'ano' ? ' · ' + esc(p.poznamka) : '') + '</div></div>' +
+    '<button class="vymenit" data-akce="vymenit" aria-label="Vyměnit cvik">⇄</button></div>';
   if (p.lekar === 'ano') {
     h += '<div class="lekar">⚕ Zátěž rukou – jen po souhlasu lékaře.' + (p.poznamka ? ' ' + esc(p.poznamka) : '') + '</div>';
   }
@@ -526,6 +628,10 @@ app.addEventListener('click', function (e) {
   else if (a === 'pokracovat') ukoncit(false);
   else if (a === 'foto') zvetsit(el);
   else if (a === 'zavrit') el.remove();
+  else if (a === 'vymenit') otevritVymenu(el);
+  else if (a === 'zavritVyber') zavritVymenu();
+  else if (a === 'nahradit') nahradit(vymena, el.dataset.cvik);
+  else if (a === 'vlastni') pridatVlastni(document.getElementById('hledat').value, el.dataset.typ);
   else if (a === 'trenink') { LS.set('vyber', { datum: dnes(), osoba: cfg.osoba, trenink: el.dataset.trenink }); window.scrollTo(0, 0); kresli(); }
   else if (a === 'nastaveni') { obrazovka = 'nastaveni'; hlaska = null; kresli(); }
   else if (a === 'zpet') { obrazovka = 'trenink'; hlaska = null; kresli(); }
@@ -551,6 +657,7 @@ app.addEventListener('click', function (e) {
 
 // Ruční úprava zapsané série: dokud ji znovu nepotvrdíš, není označená jako zapsaná.
 app.addEventListener('input', function (e) {
+  if (e.target.id === 'hledat') return kresliSeznam(e.target.value);
   const r = e.target.closest('.radek');
   if (r) r.classList.remove('ok');
 });
