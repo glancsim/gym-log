@@ -3,7 +3,7 @@
 // Soubory aplikace se berou vždy z jedné verze mezipaměti, aby se nikdy
 // nesmíchal starý kód s novým vzhledem. Při každé změně souborů aplikace
 // ZVYŠ číslo verze: nová verze se stáhne celá najednou a appka se sama obnoví.
-const VERZE = 'fitko-v4';
+const VERZE = 'fitko-v5';
 const OBRAZKY = 'fitko-obrazky';
 const SHELL = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 

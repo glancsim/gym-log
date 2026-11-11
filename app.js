@@ -20,7 +20,7 @@ let obrazovka = 'trenink';              // 'trenink' | 'nastaveni'
 let hlaska = null;                      // { text, chyba }
 let odesilam = false;
 let aktualniPlan = [];
-let vymena = null;                      // index karty, pro kterou je otevřený výběr náhrady
+let vymena = null;                      // index karty s otevřeným výběrem cviku, nebo 'novy' při přidávání
 
 // ---------- pomocné ----------
 const app = document.getElementById('app');
@@ -292,7 +292,8 @@ function kresliTrenink() {
   aktualniPlan = data.plan
     .filter(p => p.osoba === cfg.osoba && p.trenink === vybrany && p.aktivni !== 'ne')
     .sort((a, b) => a.poradi - b.poradi)
-    .map(sNahradou);
+    .map(sNahradou)
+    .concat(pridaneCviky(vybrany));
   vymena = null;
   const d = new Date();
   let html = '<header><div class="lista"><h1>' + esc(vybrany || 'Žádný trénink') +
@@ -305,68 +306,145 @@ function kresliTrenink() {
   }
   html += '</header>' + hlaskaHTML();
   if (!aktualniPlan.length) html += '<div class="hlaska">Pro tuto osobu není v listu Plan žádný aktivní cvik.</div>';
-  html += aktualniPlan.map((p, i) => kartaHTML(p, i)).join('') + '<div class="formular" id="konec"></div>';
+  html += aktualniPlan.map((p, i) => kartaHTML(p, i)).join('') +
+    (vybrany ? '<button class="pridat-cvik" id="pridatCvik" data-akce="pridatCvik">+ Přidat cvik do dnešního tréninku</button>' : '') +
+    '<div class="formular" id="konec"></div>';
   app.innerHTML = html;
   kresliSync();
 }
 
-function cvikPodleId(id) {
-  return data.cviky.find(c => c.cvik_id === id) || vlastniCviky().find(c => c.cvik_id === id) ||
-    { cvik_id: id, nazev: id, typ: 'vaha', popis: '', obrazek_url: '' };
-}
-
-// ---------- náhrada cviku (stroj je obsazený nebo ve fitku chybí) ----------
-// Náhrada platí jen pro dnešní trénink. Série se zapisují pod náhradní cvik,
-// takže se u něj počítá i vlastní historie a návrh váhy.
+// ---------- úpravy dnešního tréninku: výměna, vynechání a přidání cviku ----------
+// Úpravy platí jen pro dnešní trénink a toto zařízení, plán v tabulce se nemění.
+// Série se zapisují pod skutečně cvičený cvik, takže má vlastní historii a návrh váhy.
+// Uloženo v dnesni: nahrady { slot: cvik_id }, vynechane { slot: true }, pridane [{ id, trenink, cvik_id }].
 function slot(p) { return p.trenink + '|' + p.poradi + '|' + (p.puvodni || p.cvik_id); }
 function vlastniCviky() { return LS.get('vlastniCviky', []); }
+function vynechany(p) { return !!(dnesniStav().vynechane || {})[slot(p)]; }
 
 function sNahradou(p) {
   const id = (dnesniStav().nahrady || {})[slot(p)];
   return id && id !== p.cvik_id ? Object.assign({}, p, { cvik_id: id, puvodni: p.cvik_id }) : p;
 }
 
-function nahradit(i, id) {
-  const p = aktualniPlan[i];
-  const puvodni = p.puvodni || p.cvik_id;
-  if (id === p.cvik_id) return;
-  if (zapsano(cvikPodleId(p.cvik_id)) &&
-    !confirm('U cviku „' + cvikPodleId(p.cvik_id).nazev + '“ už jsou dnes zapsané série. V tabulce zůstanou, jen se tady skryjí. Vyměnit?')) return;
+/** Řádek plánu pro cvik přidaný během tréninku. Série a opakování převezme z jiného
+ *  tréninku stejné osoby, kde se cvik cvičí, jinak výchozí hodnoty podle typu. */
+function pridanyRadek(x) {
+  const vzor = data.plan.find(r => r.osoba === cfg.osoba && r.cvik_id === x.cvik_id);
+  const cas = cvikPodleId(x.cvik_id).typ === 'cas';
+  return {
+    osoba: cfg.osoba, trenink: x.trenink, den: '', poradi: 'p-' + x.id, cvik_id: x.cvik_id,
+    serie: vzor ? vzor.serie : 3, opak_min: vzor ? vzor.opak_min : (cas ? 30 : 10), opak_max: vzor ? vzor.opak_max : (cas ? 45 : 12),
+    lekar: vzor ? vzor.lekar : 'ne', aktivni: 'ano', poznamka: vzor && vzor.lekar === 'ano' ? vzor.poznamka : '', pridany: x.id
+  };
+}
+
+function pridaneCviky(trenink) {
+  return (dnesniStav().pridane || []).filter(x => x.trenink === trenink).map(pridanyRadek);
+}
+
+function maZapsane(p) {
+  const c = cvikPodleId(p.cvik_id);
+  return zapsano(c) > 0 &&
+    !confirm('U cviku „' + c.nazev + '“ už jsou dnes zapsané série. V tabulce zůstanou, jen se tady skryjí. Pokračovat?');
+}
+
+function prekresliKartu(i) {
+  const karta = app.querySelector('.karta[data-i="' + i + '"]');
+  if (!karta) return;
+  if (aktualniPlan[i]) karta.outerHTML = kartaHTML(aktualniPlan[i], i);
+  else karta.remove();
+}
+
+/** Vybraný cvik z dialogu: přidání nového, nebo výměna cviku na kartě i. */
+function vyberCviku(i, id) {
   const st = dnesniStav();
-  st.nahrady = st.nahrady || {};
-  if (id === puvodni) delete st.nahrady[slot(p)];
-  else {
-    st.nahrady[slot(p)] = id;
-    const hk = cfg.osoba + '|' + slot(p);
-    const hist = LS.get('nahradyHist', {});
-    hist[hk] = [id].concat((hist[hk] || []).filter(x => x !== id)).slice(0, 3);
-    LS.set('nahradyHist', hist);
+  if (i === 'novy') {
+    const vybrany = vybranyTrenink();
+    const x = { id: uid().slice(0, 8), trenink: vybrany, cvik_id: id };
+    st.pridane = (st.pridane || []).concat([x]);
+    LS.set('dnesni', st);
+    aktualniPlan.push(pridanyRadek(x));
+    const n = aktualniPlan.length - 1;
+    document.getElementById('pridatCvik').insertAdjacentHTML('beforebegin', kartaHTML(aktualniPlan[n], n));
+    zavritVymenu();
+    const karta = app.querySelector('.karta[data-i="' + n + '"]');
+    if (karta) karta.scrollIntoView({ block: 'start' });
+    return;
+  }
+  const p = aktualniPlan[i];
+  if (id === p.cvik_id || maZapsane(p)) return;
+  if (p.pridany) {
+    const x = st.pridane.find(y => y.id === p.pridany);
+    x.cvik_id = id;
+    aktualniPlan[i] = pridanyRadek(x);
+  } else {
+    const puvodni = p.puvodni || p.cvik_id;
+    st.nahrady = st.nahrady || {};
+    if (id === puvodni) delete st.nahrady[slot(p)];
+    else {
+      st.nahrady[slot(p)] = id;
+      const hk = cfg.osoba + '|' + slot(p);
+      const hist = LS.get('nahradyHist', {});
+      hist[hk] = [id].concat((hist[hk] || []).filter(x => x !== id)).slice(0, 3);
+      LS.set('nahradyHist', hist);
+    }
+    aktualniPlan[i] = sNahradou(Object.assign({}, p, { cvik_id: puvodni, puvodni: undefined }));
   }
   LS.set('dnesni', st);
-  aktualniPlan[i] = sNahradou(Object.assign({}, p, { cvik_id: puvodni, puvodni: undefined }));
-  const karta = app.querySelector('.karta[data-i="' + i + '"]');
-  if (karta) karta.outerHTML = kartaHTML(aktualniPlan[i], i);
+  prekresliKartu(i);
   zavritVymenu();
+}
+
+/** Cvik z plánu se dnes vynechá (karta se sbalí), přidaný cvik se úplně odebere. */
+function vynechat(i) {
+  const p = aktualniPlan[i];
+  if (maZapsane(p)) return;
+  const st = dnesniStav();
+  if (p.pridany) {
+    st.pridane = (st.pridane || []).filter(x => x.id !== p.pridany);
+    aktualniPlan[i] = null;
+  } else {
+    st.vynechane = st.vynechane || {};
+    st.vynechane[slot(p)] = true;
+  }
+  LS.set('dnesni', st);
+  prekresliKartu(i);
+  zavritVymenu();
+}
+
+function vratit(el) {
+  const i = Number(el.closest('.karta').dataset.i);
+  const st = dnesniStav();
+  if (st.vynechane) delete st.vynechane[slot(aktualniPlan[i])];
+  LS.set('dnesni', st);
+  prekresliKartu(i);
 }
 
 function pridatVlastni(nazev, typ) {
   nazev = nazev.trim().slice(0, 80);
   if (!nazev) return;
   const existujici = data.cviky.concat(vlastniCviky()).find(c => String(c.nazev).toLowerCase() === nazev.toLowerCase());
-  if (existujici) return nahradit(vymena, existujici.cvik_id);
+  if (existujici) return vyberCviku(vymena, existujici.cvik_id);
   const v = vlastniCviky();
   v.push({ cvik_id: nazev, nazev: nazev, typ: typ, krok_kg: '', popis: 'Vlastní cvik přidaný během tréninku.', obrazek_url: '', alternativa: '' });
   LS.set('vlastniCviky', v);
-  nahradit(vymena, nazev);
+  vyberCviku(vymena, nazev);
 }
 
 function otevritVymenu(el) {
-  vymena = Number(el.closest('.karta').dataset.i);
-  const p = aktualniPlan[vymena];
-  const c = cvikPodleId(p.puvodni || p.cvik_id);
-  app.insertAdjacentHTML('beforeend', '<div class="vyber" role="dialog" aria-label="Vyměnit cvik"><div class="lista">' +
-    '<h1>Vyměnit cvik<small>místo: ' + esc(c.nazev) + '</small></h1><button data-akce="zavritVyber">Zavřít</button></div>' +
-    (c.alternativa ? '<div class="info">Doporučená náhrada: <b>' + esc(c.alternativa) + '</b></div>' : '') +
+  const novy = el.dataset.akce === 'pridatCvik';
+  vymena = novy ? 'novy' : Number(el.closest('.karta').dataset.i);
+  const p = novy ? null : aktualniPlan[vymena];
+  const c = p && cvikPodleId(p.puvodni || p.cvik_id);
+  let h = '<div class="vyber" role="dialog" aria-label="' + (novy ? 'Přidat cvik' : 'Upravit cvik') + '"><div class="lista">' +
+    '<h1>' + (novy ? 'Přidat cvik<small>jen do dnešního tréninku</small>' : 'Vyměnit cvik<small>místo: ' + esc(c.nazev) + '</small>') +
+    '</h1><button data-akce="zavritVyber">Zavřít</button></div>';
+  if (!novy) {
+    h += '<button class="velke nebezpecne" data-akce="vynechat">' +
+      (p.pridany ? '✕ Odebrat z dnešního tréninku' : '✕ Dnes vynechat') + '</button>';
+    if (c.alternativa) h += '<div class="info">Doporučená náhrada: <b>' + esc(c.alternativa) + '</b></div>';
+  }
+  app.insertAdjacentHTML('beforeend', h +
     '<input id="hledat" type="search" placeholder="Hledat cvik…" autocomplete="off" aria-label="Hledat cvik">' +
     '<div id="seznam"></div></div>');
   kresliSeznam('');
@@ -381,16 +459,17 @@ function zavritVymenu() {
 function kresliSeznam(hledat) {
   const el = document.getElementById('seznam');
   if (!el || vymena == null) return;
-  const p = aktualniPlan[vymena];
-  const puvodni = cvikPodleId(p.puvodni || p.cvik_id);
-  // Cviky, které už jsou dnes v plánu, nenabízej – série by se jim pomíchaly.
-  const obsazene = aktualniPlan.filter((x, j) => j !== vymena).map(x => x.cvik_id);
+  const p = vymena === 'novy' ? null : aktualniPlan[vymena];
+  const puvodni = p && !p.pridany ? cvikPodleId(p.puvodni || p.cvik_id) : null;
+  // Cviky, které už jsou dnes v tréninku, nenabízej – série by se jim pomíchaly.
+  const obsazene = aktualniPlan.filter((x, j) => x && j !== vymena).map(x => x.puvodni ? [x.cvik_id, x.puvodni] : [x.cvik_id])
+    .reduce((a, b) => a.concat(b), []);
   const vse = data.cviky.concat(vlastniCviky().filter(v => !data.cviky.some(c => c.cvik_id === v.cvik_id)))
-    .filter(c => obsazene.indexOf(c.cvik_id) === -1 && c.cvik_id !== puvodni.cvik_id);
+    .filter(c => obsazene.indexOf(c.cvik_id) === -1 && !(puvodni && c.cvik_id === puvodni.cvik_id));
   const q = hledat.trim().toLowerCase();
-  const alt = String(puvodni.alternativa || '').toLowerCase();
-  const hist = LS.get('nahradyHist', {})[cfg.osoba + '|' + slot(p)] || [];
-  const tlacitko = c => '<button class="velke' + (c.cvik_id === p.cvik_id ? ' hlavni' : '') + '" data-akce="nahradit" data-cvik="' +
+  const alt = puvodni ? String(puvodni.alternativa || '').toLowerCase() : '';
+  const hist = p && !p.pridany ? LS.get('nahradyHist', {})[cfg.osoba + '|' + slot(p)] || [] : [];
+  const tlacitko = c => '<button class="velke' + (p && c.cvik_id === p.cvik_id ? ' hlavni' : '') + '" data-akce="nahradit" data-cvik="' +
     esc(c.cvik_id) + '">' + esc(c.nazev) + '</button>';
   let h = '';
   if (q) {
@@ -400,7 +479,7 @@ function kresliSeznam(hledat) {
       '<button class="velke" data-akce="vlastni" data-typ="vaha">+ „' + esc(hledat.trim()) + '“ s váhou</button>' +
       '<button class="velke" data-akce="vlastni" data-typ="vlastni_vaha">+ „' + esc(hledat.trim()) + '“ bez váhy</button>';
   } else {
-    if (p.puvodni) h += '<button class="velke" data-akce="nahradit" data-cvik="' + esc(puvodni.cvik_id) + '">↺ Zpět na původní: ' + esc(puvodni.nazev) + '</button>';
+    if (p && p.puvodni) h += '<button class="velke" data-akce="nahradit" data-cvik="' + esc(puvodni.cvik_id) + '">↺ Zpět na původní: ' + esc(puvodni.nazev) + '</button>';
     const navrh = vse.filter(c => hist.indexOf(c.cvik_id) !== -1 ||
       (alt && (alt.indexOf(String(c.nazev).toLowerCase()) !== -1 || alt.indexOf(String(c.cvik_id).toLowerCase()) !== -1)));
     navrh.sort((a, b) => (hist.indexOf(a.cvik_id) + 1 || 9) - (hist.indexOf(b.cvik_id) + 1 || 9));
@@ -411,8 +490,17 @@ function kresliSeznam(hledat) {
   el.innerHTML = h;
 }
 
+function cvikPodleId(id) {
+  return data.cviky.find(c => c.cvik_id === id) || vlastniCviky().find(c => c.cvik_id === id) ||
+    { cvik_id: id, nazev: id, typ: 'vaha', popis: '', obrazek_url: '' };
+}
+
 function kartaHTML(p, i) {
   const c = cvikPodleId(p.cvik_id);
+  if (vynechany(p)) {
+    return '<article class="karta vynechana" data-i="' + i + '"><div class="hlava"><div class="nazev"><h2>' + esc(c.nazev) +
+      '</h2><div class="cil">Dnes vynecháno</div></div><button class="vratit" data-akce="vratit">Vrátit</button></div></article>';
+  }
   const m = minule(c.cvik_id);
   const nv = navrh(c, p, m);
   const jednotka = c.typ === 'cas' ? ' s' : ' opak.';
@@ -421,10 +509,11 @@ function kartaHTML(p, i) {
     h += '<img class="foto" crossorigin="anonymous" loading="lazy" alt="" src="' + esc(c.obrazek_url) + '" data-akce="foto">';
   }
   h += '<div class="nazev"><h2>' + esc(c.nazev) + '</h2>' +
+    (p.pridany ? '<div class="misto">+ přidáno navíc</div>' : '') +
     (p.puvodni ? '<div class="misto">⇄ místo: ' + esc(cvikPodleId(p.puvodni).nazev) + '</div>' : '') + '<div class="cil">' + esc(p.serie) + ' × ' + esc(p.opak_min) +
     (String(p.opak_max) !== String(p.opak_min) ? '–' + esc(p.opak_max) : '') + jednotka +
     (p.poznamka && p.lekar !== 'ano' ? ' · ' + esc(p.poznamka) : '') + '</div></div>' +
-    '<button class="vymenit" data-akce="vymenit" aria-label="Vyměnit cvik">⇄</button></div>';
+    '<button class="vymenit" data-akce="vymenit" aria-label="Vyměnit nebo vynechat cvik">⇄</button></div>';
   if (p.lekar === 'ano') {
     h += '<div class="lekar">⚕ Zátěž rukou – jen po souhlasu lékaře.' + (p.poznamka ? ' ' + esc(p.poznamka) : '') + '</div>';
   }
@@ -630,7 +719,10 @@ app.addEventListener('click', function (e) {
   else if (a === 'zavrit') el.remove();
   else if (a === 'vymenit') otevritVymenu(el);
   else if (a === 'zavritVyber') zavritVymenu();
-  else if (a === 'nahradit') nahradit(vymena, el.dataset.cvik);
+  else if (a === 'pridatCvik') otevritVymenu(el);
+  else if (a === 'nahradit') vyberCviku(vymena, el.dataset.cvik);
+  else if (a === 'vynechat') vynechat(vymena);
+  else if (a === 'vratit') vratit(el);
   else if (a === 'vlastni') pridatVlastni(document.getElementById('hledat').value, el.dataset.typ);
   else if (a === 'trenink') { LS.set('vyber', { datum: dnes(), osoba: cfg.osoba, trenink: el.dataset.trenink }); window.scrollTo(0, 0); kresli(); }
   else if (a === 'nastaveni') { obrazovka = 'nastaveni'; hlaska = null; kresli(); }
